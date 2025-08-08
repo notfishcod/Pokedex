@@ -1,0 +1,275 @@
+package main
+
+import (
+	"bufio"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"strings"
+        "math/rand"
+)
+
+type config struct {
+	Next     *string
+	Previous *string
+        AreaName *string
+        PokemonCache map[string]LocationAreaResponse
+}
+
+type PokeAPILocationAreasResponse struct {
+	Count    int     `json:"count"`
+	Next     *string `json:"next"`
+	Previous *string `json:"previous"`
+	Results  []struct {
+		Name string `json:"name"`
+		URL  string `json:"url"`
+	} `json:"results"`
+}
+
+type LocationAreaResponse struct {
+    PokemonEncounters []PokemonEncounter `json:"pokemon_encounters"`
+}
+
+type PokemonEncounter struct {
+    Pokemon Pokemon `json:"pokemon"`
+}
+
+type Pokemon struct {
+    Name string `json:"name"`
+    URL  string `json:"url"`
+}
+
+type cliCommand struct {
+	name        string
+	description string
+	callback    func(*config) error
+}
+
+func commandExit(cfg *config) error {
+	fmt.Print("Closing the Pokedex... Goodbye!\n")
+	os.Exit(0)
+	return nil
+}
+
+func commandHelp(cfg *config) error {
+	fmt.Print("Welcome to the Pokedex!\nUsage:\n\nhelp: Displays a help message\nexit: Exit the Pokedex\n")
+	return nil
+}
+
+func commandMap(cfg *config) error {
+	url := "https://pokeapi.co/api/v2/location-area/"
+
+	if cfg.Next != nil {
+		url = *cfg.Next
+	}
+
+	resp, err := http.Get(url)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+
+	var pokeResp PokeAPILocationAreasResponse
+
+	err = json.Unmarshal(bodyBytes, &pokeResp)
+	if err != nil {
+		return err
+	}
+
+	cfg.Next = pokeResp.Next
+	cfg.Previous = pokeResp.Previous
+
+	for _, location := range pokeResp.Results {
+		fmt.Println(location.Name)
+	}
+
+	return nil
+}
+
+func commandMapb(cfg *config) error {
+	if cfg.Previous == nil {
+		fmt.Println("you're on the first page")
+		return nil
+	}
+
+	url := *cfg.Previous
+
+	resp, err := http.Get(url)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+
+	var pokeResp PokeAPILocationAreasResponse
+
+	err = json.Unmarshal(bodyBytes, &pokeResp)
+	if err != nil {
+		return err
+	}
+
+	cfg.Next = pokeResp.Next
+	cfg.Previous = pokeResp.Previous
+
+	for _, location := range pokeResp.Results {
+		fmt.Println(location.Name)
+	}
+
+	return nil
+}
+
+func commandExplore(cfg *config) error {
+    if cfg.AreaName == nil {
+        fmt.Println("Error: explore command requires an area name (e.g., explore pastoria-city-area)")
+        return nil
+    }
+
+    areaName := *cfg.AreaName
+    fmt.Printf("Exploring %s...\n", areaName)
+
+    if cachedResponse, ok := cfg.PokemonCache[areaName]; ok {
+        fmt.Println("Found Pokemon (from cache):")
+        for _, encounter := range cachedResponse.PokemonEncounters {
+            fmt.Printf(" - %s\n", encounter.Pokemon.Name)
+        }
+        return nil
+    }
+
+    url := "https://pokeapi.co/api/v2/location-area/" + areaName + "/"
+
+    resp, err := http.Get(url)
+    if err != nil {
+        return err
+    }
+    defer resp.Body.Close()
+
+    bodyBytes, err := io.ReadAll(resp.Body)
+    if err != nil {
+        return err
+    }
+
+    var exploreResp LocationAreaResponse
+
+    err = json.Unmarshal(bodyBytes, &exploreResp)
+    if err != nil {
+        return err
+    }
+
+    cfg.PokemonCache[areaName] = exploreResp
+
+    fmt.Println("Found Pokemon:")
+    for _, encounter := range exploreResp.PokemonEncounters {
+        fmt.Printf(" - %s\n", encounter.Pokemon.Name)
+    }
+
+    return nil
+}
+
+func commandCatch(args []string) {
+    if len(args) == 0 {
+        fmt.Println("You need to specify a Pokemon to catch!")
+        return
+    }
+
+    pokemonName := args[0]
+    fmt.Printf("Throwing a Pokeball at %s...\n", pokemonName)
+
+    url := "https://pokeapi.co/api/v2/pokemon/" + pokemonName
+    resp, err := http.Get(url)
+    if err != nil {
+        fmt.Printf("Error fetching Pokemon data: %v\n", err)
+        return
+    }
+    defer resp.Body.Close()
+
+    bodyData, err := io.ReadAll(resp.Body)
+    if err != nil {
+        fmt.Printf("Error reading response body: %v\n", err)
+        return
+    }
+    type PokemonData struct {
+        BaseExperience int `json:"base_experience"`
+    }
+    var pokemonInfo PokemonData
+
+    err = json.Unmarshal(bodyData, &pokemonInfo)
+    if err != nil {
+        fmt.Printf("Error unmarshaling Pokemon data: %v\n", err)
+        return
+    }
+
+}
+
+func main() {
+	cfg := &config{
+           PokemonCache: make(map[string]LocationAreaResponse),
+        }
+
+	scanner := bufio.NewScanner(os.Stdin)
+	for {
+		fmt.Print("Pokedex > ")
+		scanner.Scan()
+		input := scanner.Text()
+		cleanedInput := strings.ToLower(input)
+		words := strings.Fields(cleanedInput)
+		if len(words) == 0 {
+			continue
+		}
+		firstWord := words[0]
+		commands := map[string]cliCommand{
+			"exit": {
+				name:        "exit",
+				description: "Exit the Pokedex",
+				callback:    commandExit,
+			},
+			"help": {
+				name:        "help",
+				description: "Displays a help message",
+				callback:    commandHelp,
+			},
+			"map": {
+				name:        "map",
+				description: "Display location areas",
+				callback:    commandMap,
+			},
+			"mapb": {
+				name:        "mapb",
+				description: "Display previous location areas",
+				callback:    commandMapb,
+			},
+			"explore": {
+				name:        "explore",
+				description: "Explore certain location areas",
+				callback:    commandExplore,
+			},
+		}
+		if command, exists := commands[firstWord]; exists {
+			// Special handling for explore command
+			if firstWord == "explore" {
+				if len(words) < 2 {
+					fmt.Println("Error: explore command requires an area name")
+					continue
+				}
+				cfg.AreaName = &words[1]
+			}
+
+			err := command.callback(cfg)
+			if err != nil {
+				fmt.Println(err)
+			}
+		} else {
+			fmt.Println("Unknown command")
+		}
+	}
+}
